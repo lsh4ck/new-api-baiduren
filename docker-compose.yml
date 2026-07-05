@@ -1,0 +1,110 @@
+version: '3.4'
+
+services:
+  new-api:
+    image: calciumion/new-api:latest
+    container_name: new-api
+    restart: always
+    command: --log-dir /app/logs
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./data:/data
+      - ./logs:/app/logs
+    environment:
+      - SQL_DSN=postgresql://newapi:CHANGE_ME_pg_password@postgres:5432/newapi
+      - REDIS_CONN_STRING=redis://:CHANGE_ME_redis_password@redis:6379
+      - SESSION_SECRET=CHANGE_ME_session_secret
+      - TZ=Asia/Shanghai
+      - ERROR_LOG_ENABLED=true
+      - BATCH_UPDATE_ENABLED=true
+      - NODE_NAME=new-api-node-1
+      - SUBSCRIPTION_ENABLED=true
+      - SUBSCRIPTION_STICKY_TTL=3600
+      - SUBSCRIPTION_AUTO_REFRESH=true
+      # GitHub OAuth
+      - GITHUB_CLIENT_SECRET=CHANGE_ME_github_client_secret
+      # 微信登录（wechat-server 使用）
+      - WECHAT_SERVER_TOKEN=CHANGE_ME_wechat_server_token
+      # 可信回调域名（支付回调）
+      - TRUSTED_REDIRECT_DOMAINS=zhuanzhuan.pw
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    networks:
+      - new-api-network
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://localhost:3000/api/status | grep -o '\"success\":.*true' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # 微信登录 / 微信支付服务
+  wechat-server:
+    image: justsong/wechat-server:latest
+    container_name: wechat-server
+    restart: always
+    environment:
+      - PORT=3002
+      - SESSION_SECRET=CHANGE_ME_wechat_session_secret
+      - WECHAT_TOKEN=CHANGE_ME_wechat_token
+      - WECHAT_APPID=CHANGE_ME_wechat_appid
+      - WECHAT_SECRET=CHANGE_ME_wechat_secret
+    networks:
+      - new-api-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:3002/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    container_name: new-api-redis
+    restart: always
+    command: ["redis-server", "--requirepass", "CHANGE_ME_redis_password"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - new-api-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "CHANGE_ME_redis_password", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: new-api-postgres
+    restart: always
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: newapi
+      POSTGRES_PASSWORD: CHANGE_ME_pg_password
+      POSTGRES_DB: newapi
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      # 初始化 SQL：建表 + 支付配置预置（仅首次启动执行）
+      - ./docker-initdb/01_fusion.sql:/docker-entrypoint-initdb.d/01_fusion.sql:ro
+      - ./docker-initdb/02_payment_settings.sql:/docker-entrypoint-initdb.d/02_payment_settings.sql:ro
+    networks:
+      - new-api-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U newapi -d newapi"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  pg_data:
+  redis_data:
+
+networks:
+  new-api-network:
+    driver: bridge
